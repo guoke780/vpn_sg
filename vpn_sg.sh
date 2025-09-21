@@ -1,7 +1,7 @@
 #!/bin/bash
-# 自动化双向 Peer + Xray 安装脚本（出口机/中转机）
-# 出口机：检查是否安装 WireGuard + 可选添加中转机 Peer
-# 中转机：自动双向 Peer + 可选 WireGuard 握手检测 + Xray/TLS + Shadowrocket QR
+# 半自动双向 Peer + Xray 安装脚本
+# 出口机：安装检查 WireGuard + 公钥 + 可选添加中转机 Peer
+# 中转机：显示自身公钥手动回填出口机 Peer，继续 WireGuard + 可选握手检测 + Xray/TLS
 
 set -e
 
@@ -13,7 +13,7 @@ read -p "输入数字 [1-2]: " ROLE
 WG_CONFIG="/etc/wireguard/wg0.conf"
 X_CONFIG="/usr/local/etc/xray/config.json"
 
-# 安装基础依赖
+# 安装依赖
 apt update && apt install -y wireguard qrencode curl ufw iproute2 iputils-ping jq certbot unzip
 
 if [ "$ROLE" == "1" ]; then
@@ -45,16 +45,16 @@ EOF
   fi
 
   # 可选回填中转机 Peer
-  read -p "是否要添加香港 VPS 公钥作为 Peer？(y/n): " ADD_PEER
+  read -p "是否要添加中转机公钥作为 Peer？(y/n): " ADD_PEER
   if [[ "$ADD_PEER" =~ ^[Yy]$ ]]; then
-    read -p "请输入香港 VPS 公钥: " HK_PUB
+    read -p "请输入中转机公钥: " HK_PUB
     if grep -q "$HK_PUB" "$WG_CONFIG"; then
       echo "Peer 已存在，无需重复添加"
     else
       echo -e "\n[Peer]\nPublicKey = $HK_PUB\nAllowedIPs = 10.0.0.2/32\nPersistentKeepalive = 25" >> $WG_CONFIG
       wg-quick down wg0
       wg-quick up wg0
-      echo "已添加香港 VPS Peer，WireGuard 重启完成"
+      echo "已添加中转机 Peer，WireGuard 重启完成"
     fi
   fi
 
@@ -62,7 +62,7 @@ EOF
   echo "PublicKey: $PUBLIC_KEY"
 
 elif [ "$ROLE" == "2" ]; then
-  # ===== 中转机（香港） =====
+  # ===== 中转机（香港 VPS） =====
   read -p "请输入新加坡 VPS 公钥: " SG_PUB
   read -p "请输入新加坡 VPS 公网IP: " SG_IP
   read -p "请输入香港 VPS 域名: " DOMAIN
@@ -70,8 +70,16 @@ elif [ "$ROLE" == "2" ]; then
   PRIVATE_KEY=$(wg genkey)
   PUB_KEY=$(echo $PRIVATE_KEY | wg pubkey)
 
+  echo "==============================="
+  echo "中转机 WireGuard 公钥已生成:"
+  echo "$PUB_KEY"
+  echo "请手动将此公钥填写到出口机的 Peer 配置后再继续"
+  echo "按 Enter 继续..."
+  read -p ""
+
+  # 生成本机 WireGuard 配置
   mkdir -p /etc/wireguard
-  cat <<EOF >$WG_CONFIG
+  cat <<EOF >/etc/wireguard/wg0.conf
 [Interface]
 Address = 10.0.0.2/24
 PrivateKey = $PRIVATE_KEY
@@ -117,13 +125,12 @@ EOF
     echo "已跳过 WireGuard 握手检测"
   fi
 
-  # ===== TLS 证书 =====
+  # ===== Xray/TLS 部分 =====
   certbot certonly --standalone -d $DOMAIN --agree-tos --email admin@$DOMAIN --non-interactive
   CERT_PATH="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
   KEY_PATH="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
   echo "0 3 * * * root certbot renew --post-hook 'systemctl restart xray'" >> /etc/crontab
 
-  # ===== 安装 Xray =====
   bash <(curl -L https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)
   UUID=$(cat /proc/sys/kernel/random/uuid)
 
