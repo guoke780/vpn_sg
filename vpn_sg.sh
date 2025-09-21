@@ -1,11 +1,11 @@
 #!/bin/bash
 # 一键部署 WireGuard + Xray/TLS（出口机/中转机统一脚本）
 # 特性：
-# - 自动安装依赖 WireGuard、Xray
+# - WireGuard 自动安装
 # - 半自动公钥填写
 # - 可选握手检测
-# - Xray 下载失败时自动使用备用地址重试
-# - 自动生成 Shadowrocket QR
+# - Xray 下载失败自动切换备用地址
+# - 使用 wget 下载 Xray 安装脚本
 
 set -e
 
@@ -20,13 +20,13 @@ echo "2) 中转机（香港 VPS）"
 read -p "输入数字 [1-2]: " ROLE
 
 # 安装依赖
-apt update && apt install -y wireguard qrencode curl ufw iproute2 iputils-ping jq certbot unzip
+apt update && apt install -y wireguard qrencode wget ufw iproute2 iputils-ping jq certbot unzip
 
 # WireGuard 密钥
 PRIVATE_KEY=$(wg genkey)
 PUB_KEY=$(echo $PRIVATE_KEY | wg pubkey)
 
-# ===== 安装 Xray 函数 =====
+# ===== 安装 Xray 函数（wget 版） =====
 install_xray() {
     echo "正在下载 Xray 官方安装脚本..."
     ATTEMPTS=0
@@ -34,15 +34,17 @@ install_xray() {
     BACKUP="https://github.com/XTLS/Xray-install/raw/main/install-release.sh"
 
     while [ $ATTEMPTS -lt 3 ]; do
-        curl -L -o /tmp/install-xray.sh $PRIMARY
+        # 尝试主地址
+        wget -qO /tmp/install-xray.sh --header="User-Agent: Mozilla/5.0" $PRIMARY
         if head -n 1 /tmp/install-xray.sh | grep -q '^#!/bin/bash'; then
-            echo "Xray 安装脚本下载成功 ✅"
+            echo "主地址下载成功 ✅"
             bash /tmp/install-xray.sh
             return
         fi
 
+        # 尝试备用地址
         echo "主地址下载失败，尝试备用地址..."
-        curl -L -o /tmp/install-xray.sh $BACKUP
+        wget -qO /tmp/install-xray.sh --header="User-Agent: Mozilla/5.0" $BACKUP
         if head -n 1 /tmp/install-xray.sh | grep -q '^#!/bin/bash'; then
             echo "备用地址下载成功 ✅"
             bash /tmp/install-xray.sh
@@ -54,7 +56,7 @@ install_xray() {
         sleep 2
     done
 
-    echo "❌ Xray 安装脚本下载失败，请确认网络或手动下载安装"
+    echo "❌ Xray 安装脚本下载失败，请检查网络或手动下载安装"
     exit 1
 }
 
