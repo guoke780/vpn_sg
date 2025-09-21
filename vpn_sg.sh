@@ -1,7 +1,5 @@
 #!/bin/bash
-# 一键部署 WireGuard + Xray/TLS（出口机/中转机统一脚本）
-# 用法：执行脚本后选择角色，自动完成部署或生成公钥
-
+# 一键部署 WireGuard + Xray/TLS（出口机/中转机统一脚本，自动检测 Xray 安装脚本）
 set -e
 
 ROLE=""
@@ -17,19 +15,36 @@ read -p "输入数字 [1-2]: " ROLE
 # 安装依赖
 apt update && apt install -y wireguard qrencode curl ufw iproute2 iputils-ping jq certbot unzip
 
-# 生成 WireGuard 密钥
+# WireGuard 密钥
 PRIVATE_KEY=$(wg genkey)
 PUB_KEY=$(echo $PRIVATE_KEY | wg pubkey)
+
+install_xray() {
+    echo "正在下载 Xray 官方安装脚本..."
+    ATTEMPTS=0
+    while [ $ATTEMPTS -lt 3 ]; do
+        curl -L -o /tmp/install-xray.sh https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh
+        if head -n 1 /tmp/install-xray.sh | grep -q '^#!/bin/bash'; then
+            echo "Xray 安装脚本下载成功 ✅"
+            bash /tmp/install-xray.sh
+            return
+        else
+            echo "Xray 安装脚本下载失败，尝试重试..."
+            ATTEMPTS=$((ATTEMPTS+1))
+            sleep 2
+        fi
+    done
+    echo "❌ Xray 安装脚本下载失败，请确认网络或手动下载安装"
+    exit 1
+}
 
 if [ "$ROLE" == "1" ]; then
     echo "===== 出口机部署 ====="
     echo "出口机 WireGuard 公钥: $PUB_KEY"
-    echo "请记录此公钥，用于中转机 Peer 配置"
     read -p "请输入中转机 WireGuard 公钥（手动填写，可留空稍后添加）: " PEER_PUB
     read -p "请输入出口机监听端口（默认 51820）: " WG_PORT
     WG_PORT=${WG_PORT:-51820}
 
-    # 生成 WireGuard 配置
     mkdir -p /etc/wireguard
     cat <<EOF >$WG_CONFIG
 [Interface]
@@ -49,11 +64,11 @@ PersistentKeepalive = 25
 EOF
     fi
 
-    # 启动 WireGuard
     if ip link show wg0 &>/dev/null; then
         echo "检测到 wg0 接口已存在，正在删除..."
         ip link delete wg0
     fi
+
     wg-quick up wg0
     systemctl enable wg-quick@wg0
     ufw allow $WG_PORT/udp || true
@@ -69,7 +84,6 @@ else
     echo "请手动将此公钥填写到出口机 Peer 后再继续"
     read -p "按 Enter 继续..."
 
-    # 生成 WireGuard 配置
     mkdir -p /etc/wireguard
     cat <<EOF >$WG_CONFIG
 [Interface]
@@ -84,13 +98,11 @@ AllowedIPs = 10.0.0.1/32
 PersistentKeepalive = 25
 EOF
 
-    # 自动处理残留接口
     if ip link show wg0 &>/dev/null; then
         echo "检测到 wg0 接口已存在，正在删除..."
         ip link delete wg0
     fi
 
-    # 启动 WireGuard
     wg-quick up wg0
     systemctl enable wg-quick@wg0
     ufw allow 51820/udp || true
@@ -124,17 +136,16 @@ EOF
     fi
 
     # 安装 Xray
-    bash <(curl -L https://github.com/XTLS/Xray-install/main/install-release.sh)
+    install_xray
+
     UUID=$(cat /proc/sys/kernel/random/uuid)
     mkdir -p $(dirname $X_CONFIG)
 
-    # 获取证书
     certbot certonly --standalone -d $DOMAIN --agree-tos --email admin@$DOMAIN --non-interactive
     CERT_PATH="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
     KEY_PATH="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
     chmod 644 $CERT_PATH $KEY_PATH
 
-    # 写入 Xray 配置
     cat <<EOF >$X_CONFIG
 {
   "inbounds": [
