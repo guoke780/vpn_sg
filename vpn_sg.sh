@@ -1,7 +1,7 @@
 #!/bin/bash
-# 半自动双向 Peer + Xray 安装脚本
+# 安全版半自动双向 Peer + Xray 安装脚本
 # 出口机：安装检查 WireGuard + 公钥 + 可选添加中转机 Peer
-# 中转机：显示自身公钥手动回填出口机 Peer，继续 WireGuard + 可选握手检测 + Xray/TLS
+# 中转机：生成配置并显示公钥 → 手动回填出口机 Peer → 用户手动启动接口 → 可选握手检测 + Xray/TLS
 
 set -e
 
@@ -77,7 +77,7 @@ elif [ "$ROLE" == "2" ]; then
   echo "按 Enter 继续..."
   read -p ""
 
-  # 生成本机 WireGuard 配置
+  # 生成本机 WireGuard 配置（不自动启动接口）
   mkdir -p /etc/wireguard
   cat <<EOF >/etc/wireguard/wg0.conf
 [Interface]
@@ -92,17 +92,19 @@ AllowedIPs = 10.0.0.1/32
 PersistentKeepalive = 25
 EOF
 
-  systemctl enable wg-quick@wg0
-  wg-quick up wg0
-  ufw allow 51820/udp || true
+  echo "WireGuard 配置已生成。"
+  echo "请手动执行以下命令启动接口："
+  echo "wg-quick up wg0"
 
   # ===== 可选握手检测 =====
-  echo "是否要检测 WireGuard 握手？"
+  echo "是否要在启动接口后检测 WireGuard 握手？"
   echo "1) 检测"
   echo "2) 跳过"
   read -p "输入数字 [1-2]: " TEST_WG
 
   if [ "$TEST_WG" == "1" ]; then
+    echo "请先确保你已手动执行 'wg-quick up wg0'"
+    read -p "按 Enter 继续..."
     echo "正在测试到新加坡出口的连通性..."
     success=false
     for i in {1..5}; do
@@ -125,7 +127,7 @@ EOF
     echo "已跳过 WireGuard 握手检测"
   fi
 
-  # ===== Xray/TLS 部分 =====
+  # ===== Xray/TLS 部署 =====
   certbot certonly --standalone -d $DOMAIN --agree-tos --email admin@$DOMAIN --non-interactive
   CERT_PATH="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
   KEY_PATH="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
