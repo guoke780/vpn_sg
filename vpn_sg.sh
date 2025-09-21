@@ -1,5 +1,12 @@
 #!/bin/bash
-# 一键部署 WireGuard + Xray/TLS（出口机/中转机统一脚本，自动检测 Xray 安装脚本）
+# 一键部署 WireGuard + Xray/TLS（出口机/中转机统一脚本）
+# 特性：
+# - 自动安装依赖 WireGuard、Xray
+# - 半自动公钥填写
+# - 可选握手检测
+# - Xray 下载失败时自动使用备用地址重试
+# - 自动生成 Shadowrocket QR
+
 set -e
 
 ROLE=""
@@ -19,25 +26,39 @@ apt update && apt install -y wireguard qrencode curl ufw iproute2 iputils-ping j
 PRIVATE_KEY=$(wg genkey)
 PUB_KEY=$(echo $PRIVATE_KEY | wg pubkey)
 
+# ===== 安装 Xray 函数 =====
 install_xray() {
     echo "正在下载 Xray 官方安装脚本..."
     ATTEMPTS=0
+    PRIMARY="https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh"
+    BACKUP="https://github.com/XTLS/Xray-install/raw/main/install-release.sh"
+
     while [ $ATTEMPTS -lt 3 ]; do
-        curl -L -o /tmp/install-xray.sh https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh
+        curl -L -o /tmp/install-xray.sh $PRIMARY
         if head -n 1 /tmp/install-xray.sh | grep -q '^#!/bin/bash'; then
             echo "Xray 安装脚本下载成功 ✅"
             bash /tmp/install-xray.sh
             return
-        else
-            echo "Xray 安装脚本下载失败，尝试重试..."
-            ATTEMPTS=$((ATTEMPTS+1))
-            sleep 2
         fi
+
+        echo "主地址下载失败，尝试备用地址..."
+        curl -L -o /tmp/install-xray.sh $BACKUP
+        if head -n 1 /tmp/install-xray.sh | grep -q '^#!/bin/bash'; then
+            echo "备用地址下载成功 ✅"
+            bash /tmp/install-xray.sh
+            return
+        fi
+
+        ATTEMPTS=$((ATTEMPTS+1))
+        echo "下载失败，重试第 $ATTEMPTS 次..."
+        sleep 2
     done
+
     echo "❌ Xray 安装脚本下载失败，请确认网络或手动下载安装"
     exit 1
 }
 
+# ===== 出口机部署 =====
 if [ "$ROLE" == "1" ]; then
     echo "===== 出口机部署 ====="
     echo "出口机 WireGuard 公钥: $PUB_KEY"
@@ -64,16 +85,17 @@ PersistentKeepalive = 25
 EOF
     fi
 
+    # 启动 WireGuard
     if ip link show wg0 &>/dev/null; then
         echo "检测到 wg0 接口已存在，正在删除..."
         ip link delete wg0
     fi
-
     wg-quick up wg0
     systemctl enable wg-quick@wg0
     ufw allow $WG_PORT/udp || true
     echo "WireGuard 出口机已启动"
 
+# ===== 中转机部署 =====
 else
     echo "===== 中转机部署 ====="
     read -p "请输入出口机 WireGuard 公钥: " SG_PUB
@@ -98,6 +120,7 @@ AllowedIPs = 10.0.0.1/32
 PersistentKeepalive = 25
 EOF
 
+    # 清理残留接口
     if ip link show wg0 &>/dev/null; then
         echo "检测到 wg0 接口已存在，正在删除..."
         ip link delete wg0
@@ -146,6 +169,7 @@ EOF
     KEY_PATH="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
     chmod 644 $CERT_PATH $KEY_PATH
 
+    # 写入 Xray 配置
     cat <<EOF >$X_CONFIG
 {
   "inbounds": [
